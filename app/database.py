@@ -378,8 +378,7 @@ class _TursoConnection:
     for stmt in script.split(";"):
         stmt = stmt.strip()
         if stmt and not stmt.upper().startswith("PRAGMA"):
-            self._conn.execute(stmt)
-
+        self._conn.execute(stmt)
 
 @contextmanager
 def get_db():
