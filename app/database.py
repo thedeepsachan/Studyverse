@@ -1,8 +1,9 @@
 import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
-from app.config import DB_PATH, IST, UPLOADS_DIR, get_configured_admins
+from app.config import DATABASE_URL, DB_PATH, IST, UPLOADS_DIR, get_configured_admins
 
 SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;
@@ -339,19 +340,115 @@ CREATE TABLE IF NOT EXISTS platform_settings (
 """
 
 
+def _qmarks_to_pct_s(sql: str) -> str:
+    out = []
+    in_quote = False
+    i = 0
+    while i < len(sql):
+        ch = sql[i]
+        if ch == "'":
+            if in_quote and i + 1 < len(sql) and sql[i + 1] == "'":
+                out.append("''")
+                i += 2
+                continue
+            in_quote = not in_quote
+            out.append(ch)
+        elif ch == "?" and not in_quote:
+            out.append("%s")
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _translate_sql_to_pg(sql: str) -> tuple[str, bool]:
+    s = sql.strip()
+    if s.upper().startswith("PRAGMA"):
+        return "", False
+    s = s.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+    s = s.replace("COLLATE NOCASE", "")
+    s = s.replace("MAX(last_read_id, excluded.last_read_id)", "GREATEST(last_read_id, excluded.last_read_id)")
+    is_insert_or_ignore = bool(re.match(r"^INSERT\s+OR\s+IGNORE\s+INTO\s+", s, re.IGNORECASE))
+    if is_insert_or_ignore:
+        s = re.sub(r"^INSERT\s+OR\s+IGNORE\s+INTO\s+", "INSERT INTO ", s, count=1, flags=re.IGNORECASE)
+        if "ON CONFLICT" not in s.upper():
+            s = s.rstrip(";") + " ON CONFLICT DO NOTHING"
+    needs_returning = (
+        re.match(r"^INSERT\s+INTO\s+(users|exam_timetables|subjects|chapters|study_sessions|accountability_posts|accountability_replies|chat_channels|chat_messages|message_reports|support_posts|support_comments|study_buddies|backlogs|revisions|daily_plans|weekly_archives|quotes|announcements|notifications|ban_appeals|audit_logs)\b", s, re.IGNORECASE)
+        and "RETURNING" not in s.upper()
+        and "ON CONFLICT" not in s.upper()
+    )
+    if needs_returning:
+        s = s.rstrip(";") + " RETURNING id"
+    return _qmarks_to_pct_s(s), bool(needs_returning)
+
+
+class _PGCursor:
+    def __init__(self, cur, lastrowid=None):
+        self._cur = cur
+        self.lastrowid = lastrowid
+        self.rowcount = cur.rowcount
+
+    def fetchone(self):
+        return self._cur.fetchone()
+
+    def fetchall(self):
+        return self._cur.fetchall()
+
+
+class _PGConnection:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql: str, params=()):
+        pg_sql, ret_id = _translate_sql_to_pg(sql)
+        if not pg_sql:
+            return _PGCursor(self._conn.cursor())
+        cur = self._conn.cursor()
+        cur.execute(pg_sql, params if params else None)
+        last_id = None
+        if ret_id:
+            row = cur.fetchone()
+            if row and "id" in row:
+                last_id = row["id"]
+        return _PGCursor(cur, lastrowid=last_id)
+
+    def executescript(self, script: str):
+        for stmt in script.split(";"):
+            stmt = stmt.strip()
+            if not stmt:
+                continue
+            pg_sql, _ = _translate_sql_to_pg(stmt)
+            if pg_sql:
+                self._conn.cursor().execute(pg_sql)
+
+
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(str(DB_PATH), timeout=30.0, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON;")
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    if DATABASE_URL:
+        import psycopg
+        from psycopg.rows import dict_row
+        conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+        try:
+            yield _PGConnection(conn)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    else:
+        conn = sqlite3.connect(str(DB_PATH), timeout=30.0, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON;")
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 # Official 2027 Examination Dates (Verified November 2026)

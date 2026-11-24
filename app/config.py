@@ -18,8 +18,8 @@ if _env_file.exists():
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 IST = ZoneInfo("Asia/Kolkata")
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
-# Secret key for HMAC session signing (auto-persisted locally if not provided in env)
 _secret_file = BASE_DIR / ".secret_key"
 def _get_secret_key() -> str:
     env_key = os.environ.get("STUDYVERSE_SECRET_KEY")
@@ -34,7 +34,6 @@ def _get_secret_key() -> str:
 
 SECRET_KEY = _get_secret_key()
 
-# Super Administrator credentials from environment variables only (never hardcoded in frontend or DB-readable files)
 def get_configured_admins() -> list[tuple[str, str]]:
     admins = []
     for idx in (1, 2):
