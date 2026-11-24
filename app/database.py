@@ -7,8 +7,6 @@ from datetime import datetime
 from app.config import DATABASE_URL, DB_PATH, IST, UPLOADS_DIR, get_configured_admins
 
 SCHEMA_SQL = """
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -377,10 +375,10 @@ class _TursoConnection:
         return _TursoCursor(cur)
 
     def executescript(self, script: str):
-        for stmt in script.split(";"):
-            stmt = stmt.strip()
-            if stmt:
-                self._conn.execute(stmt)
+    for stmt in script.split(";"):
+        stmt = stmt.strip()
+        if stmt and not stmt.upper().startswith("PRAGMA"):
+            self._conn.execute(stmt)
 
 
 @contextmanager
